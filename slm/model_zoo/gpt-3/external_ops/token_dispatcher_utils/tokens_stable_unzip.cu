@@ -48,20 +48,20 @@ __global__ void tokens_unzip_stable_kernel(
 #pragma unroll
   for (int i = 0; i < num_experts; i++) {
     cumsum_offset[i] =
-        (blockIdx.x == 0)
+        (blockIdx.x == 0) //分支发散
             ? 0
             : CUMSUM_INVALID_TAG;  // 除了第0个block，其他的都以非法值初始化,因为atomic忙等要用
     expert_offset[i] = i * max_tokens_per_expert;
     local_cumsum[i] = 0;
   }
-  const int base_row_idx = blockIdx.x * CUMSUM_BLOCK_SIZE;
+  const int base_row_idx = blockIdx.x * CUMSUM_BLOCK_SIZE; //
   __shared__ int shared_expert_rowmap[CUMSUM_BLOCK_SIZE][num_experts];
   __shared__ probs_T shared_expert_probmap[CUMSUM_BLOCK_SIZE][num_experts];
 
   // --------------------- thread0 单线程任务传递 -------------------------
   if (threadIdx.x == 0) [[unlikely]] {
-    int local_expert_rowmap[CUMSUM_BLOCK_SIZE][num_experts];
-    probs_T local_expert_probs[CUMSUM_BLOCK_SIZE][num_experts];
+    int local_expert_rowmap[CUMSUM_BLOCK_SIZE][num_experts]; //当前token所属专家
+    probs_T local_expert_probs[CUMSUM_BLOCK_SIZE][num_experts]; //
 #pragma unroll
     for (int i = 0; i < CUMSUM_BLOCK_SIZE; i++) {
 #pragma unroll
@@ -89,10 +89,10 @@ __global__ void tokens_unzip_stable_kernel(
 // -------------------------- 块间通信逻辑 -----------------------------
 #pragma unroll
     for (int i = 0; i < num_experts; i++) {
-      if (blockIdx.x != 0) [[likely]] {
+      if (blockIdx.x != 0) [[likely]] { //分支发散
         while (cumsum_offset[i] == CUMSUM_INVALID_TAG) [[likely]] {
-          cumsum_offset[i] = atomicExch(
-              &global_expertwise_block_cumsum[blockIdx.x * num_experts + i],
+          cumsum_offset[i] = atomicExch( //必须使用原子函数，否则一定读写竞争
+              &global_expertwise_block_cumsum[blockIdx.x * num_experts + i], //0偏移
               CUMSUM_INVALID_TAG);
         }
       }
