@@ -78,16 +78,17 @@ __global__ void tokens_unzip_stable_kernel(
           local_cumsum+= 1;
         }
       }
+    }
 // -------------------------- 块间通信逻辑 -----------------------------
-      if (blockIdx.x != 0){ //分支发散
-        while (cumsum_offset == CUMSUM_INVALID_TAG){
-          cumsum_offset = atomicExch( //必须使用原子函数，否则一定读写竞争
-              &global_expertwise_block_cumsum[blockIdx.x * num_experts + threadIdx.x], //0偏移
-              CUMSUM_INVALID_TAG);
-        }
+    if (blockIdx.x != 0){ //分支发散
+      while (cumsum_offset == CUMSUM_INVALID_TAG){
+        cumsum_offset = atomicExch( //必须使用原子函数，否则一定读写竞争
+            &global_expertwise_block_cumsum[blockIdx.x * num_experts + threadIdx.x], //0偏移
+            CUMSUM_INVALID_TAG);
       }
-      const int proposed_offset = cumsum_offset + local_cumsum;
-      global_expertwise_block_cumsum[(blockIdx.x + 1) * num_experts + threadIdx.x] = proposed_offset;
+    }
+    const int proposed_offset = cumsum_offset + local_cumsum;
+    global_expertwise_block_cumsum[(blockIdx.x + 1) * num_experts + threadIdx.x] = proposed_offset;
        // 至此，给下一个block的cumsum已经更新完毕，下一个block可以开始cumsum的计算了
 // -------------------------- 块内通信逻辑 -----------------------------
 // 可以进一步优化
@@ -101,7 +102,6 @@ __global__ void tokens_unzip_stable_kernel(
         shared_expert_probmap[i][threadIdx.x] = local_expert_probs[i];
       }
     }
-  }
   // 至此，本线程块内的shared_mem已经规整完毕，接下来是向量化的数据搬运
   __syncthreads();  // 其余线程等到了thread0，工作安排在shared_mem上
   // ------------------------- 所有block内线程 -------------------------
