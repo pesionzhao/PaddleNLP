@@ -54,7 +54,7 @@ __global__ void tokens_unzip_stable_kernel(
   __shared__ probs_T shared_expert_probmap[CUMSUM_BLOCK_SIZE][num_experts];
 
   // --------------------- num_experts个线程处理不同的experts 要保证blockDim.x>=nums_experts
-  if(threadIdx.x<num_experts){
+  if(threadIdx.x<num_experts)[[unlikely]]{
     int local_expert_rowmap[CUMSUM_BLOCK_SIZE]; //当前token所属专家
     probs_T local_expert_probs[CUMSUM_BLOCK_SIZE]; //
 #pragma unroll
@@ -80,9 +80,9 @@ __global__ void tokens_unzip_stable_kernel(
       }
     }
 // -------------------------- 块间通信逻辑 -----------------------------
-    if (blockIdx.x != 0){ //分支发散
+    if (blockIdx.x != 0)[[likely]]{
       while (cumsum_offset == CUMSUM_INVALID_TAG){
-        cumsum_offset = atomicExch( //必须使用原子函数，否则一定读写竞争
+        cumsum_offset = atomicExch(
             &global_expertwise_block_cumsum[blockIdx.x * num_experts + threadIdx.x], //0偏移
             CUMSUM_INVALID_TAG);
       }
@@ -109,25 +109,24 @@ __global__ void tokens_unzip_stable_kernel(
        row++) {
     if (row >= total_zipped_tokens_num) return;
     const int internal_row = row - block_row_base;
-#pragma unroll
-    for (int expert = 0; expert < num_experts; expert++) {
-      const int unzipped_row_idx = shared_expert_rowmap[internal_row][expert];
-      if (threadIdx.x == 0) {
-        zipped_expertwise_rowmap[row * num_experts + expert] = unzipped_row_idx;
-      }
-      if (unzipped_row_idx == -1) continue;
-      // 更新三个核心数据结构
-      if (threadIdx.x == 0) {
+    const int unzipped_row_idx = shared_expert_rowmap[internal_row][threadIdx.x%num_experts];
+    if(threadIdx.x<num_experts)[[unlikely]]{
+      zipped_expertwise_rowmap[row * num_experts + threadIdx.x] = unzipped_row_idx;
+      if(unzipped_row_idx != -1){
         probs_unzipped[unzipped_row_idx] =
-            shared_expert_probmap[internal_row][expert];
+          shared_expert_probmap[internal_row][threadIdx.x];
       }
+    }
+    for(int expert = 0; expert<num_experts; expert++){
+      int unzipped_row_idx_expert = __shfl_sync(0xFFFFFFFF, unzipped_row_idx, expert);
+      if (unzipped_row_idx_expert == -1) continue;
       if constexpr (has_scale) {
         vectorized_memcpy(&XScale[row * scale_length],
-                          &XScale_unzipped[unzipped_row_idx * scale_length],
+                          &XScale_unzipped[unzipped_row_idx_expert * scale_length],
                           scale_length);
       }
       vectorized_memcpy(&X[row * token_length],
-                        &X_unzipped[unzipped_row_idx * token_length],
+                        &X_unzipped[unzipped_row_idx_expert * token_length],
                         token_length);
     }
   }
