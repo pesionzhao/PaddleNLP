@@ -54,7 +54,7 @@ __global__ void tokens_unzip_stable_kernel(
   __shared__ probs_T shared_expert_probmap[CUMSUM_BLOCK_SIZE][num_experts];
 
   // --------------------- num_experts个线程处理不同的experts 要保证blockDim.x>=nums_experts
-  if(threadIdx.x<max(topk, num_experts)){
+  if(threadIdx.x<num_experts){
     int local_expert_rowmap[CUMSUM_BLOCK_SIZE]; //当前token所属专家
     probs_T local_expert_probs[CUMSUM_BLOCK_SIZE]; //
 #pragma unroll
@@ -62,22 +62,20 @@ __global__ void tokens_unzip_stable_kernel(
         local_expert_rowmap[i] = -1;  // 以非法值初始化，方便后续shared mem写入
         local_expert_probs[i] = (probs_T)0;
     }
-    if(threadIdx.x<topk){
     // 将乱序访存限制在寄存器级别，后续shared_mem规整写入
-      for (int row = block_row_base; row < block_row_base + CUMSUM_BLOCK_SIZE;
-          row++) {
-        if (row >= total_zipped_tokens_num) break;
-        const int internal_row = row - block_row_base;
+    for (int row = block_row_base; row < block_row_base + CUMSUM_BLOCK_SIZE;
+        row++) {
+      if (row >= total_zipped_tokens_num) break;
+      const int internal_row = row - block_row_base;
 #pragma unroll
-        for (int k = 0; k < topk; k++) {
-            const int expert = routemap_topk[row * topk + k];
-          if (expert == -1) continue;
-          if(threadIdx.x==expert){
-            local_expert_rowmap[internal_row] =
-                local_cumsum + threadIdx.x*max_tokens_per_expert;
-            local_expert_probs[internal_row] = probs_topk[row * topk + k];
-            local_cumsum+= 1;
-          }
+      for (int k = 0; k < topk; k++) {
+          const int expert = routemap_topk[row * topk + k];
+        if (expert == -1) continue;
+        if(threadIdx.x==expert){
+          local_expert_rowmap[internal_row] =
+              local_cumsum + threadIdx.x*max_tokens_per_expert;
+          local_expert_probs[internal_row] = probs_topk[row * topk + k];
+          local_cumsum+= 1;
         }
       }
     }
