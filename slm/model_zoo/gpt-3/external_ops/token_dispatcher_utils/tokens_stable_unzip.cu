@@ -21,6 +21,7 @@
 // 多阶段算法，控制每block处理的行数来权衡额外开销
 //  首先解析routemap来更新专家当前所收到的token数，然后check前一个block给的前缀和并更新给下一个block
 //  随后，目的行号的信息已获取，立即开始搬运工作，直至任务完全完成
+// 假设num_experts<32， topK<32
 template <typename X_T,
           typename routemap_T,
           typename probs_T,
@@ -42,79 +43,70 @@ __global__ void tokens_unzip_stable_kernel(
     const int token_length,
     const int scale_length) {
   const int block_row_base = blockIdx.x * CUMSUM_BLOCK_SIZE;
-  int cumsum_offset[num_experts];
-  int expert_offset[num_experts];
-  int local_cumsum[num_experts];
-#pragma unroll
-  for (int i = 0; i < num_experts; i++) {
-    cumsum_offset[i] =
+  int cumsum_offset;
+  int local_cumsum = 0;
+  cumsum_offset =
         (blockIdx.x == 0) //分支发散
             ? 0
             : CUMSUM_INVALID_TAG;  // 除了第0个block，其他的都以非法值初始化,因为atomic忙等要用
-    expert_offset[i] = i * max_tokens_per_expert;
-    local_cumsum[i] = 0;
-  }
   const int base_row_idx = blockIdx.x * CUMSUM_BLOCK_SIZE; //
   __shared__ int shared_expert_rowmap[CUMSUM_BLOCK_SIZE][num_experts];
   __shared__ probs_T shared_expert_probmap[CUMSUM_BLOCK_SIZE][num_experts];
 
-  // --------------------- thread0 单线程任务传递 -------------------------
-  if (threadIdx.x == 0) [[unlikely]] {
-    int local_expert_rowmap[CUMSUM_BLOCK_SIZE][num_experts]; //当前token所属专家
-    probs_T local_expert_probs[CUMSUM_BLOCK_SIZE][num_experts]; //
+  // --------------------- num_experts个线程处理不同的experts 要保证blockDim.x>=nums_experts
+  if(threadIdx.x<max(topk, num_experts)){
+    int local_expert_rowmap[CUMSUM_BLOCK_SIZE]; //当前token所属专家
+    probs_T local_expert_probs[CUMSUM_BLOCK_SIZE]; //
 #pragma unroll
     for (int i = 0; i < CUMSUM_BLOCK_SIZE; i++) {
-#pragma unroll
-      for (int j = 0; j < num_experts; j++) {
-        local_expert_rowmap[i][j] =
-            -1;  // 以非法值初始化，方便后续shared mem写入
-        local_expert_probs[i][j] = (probs_T)0;
-      }
+        local_expert_rowmap[i] = -1;  // 以非法值初始化，方便后续shared mem写入
+        local_expert_probs[i] = (probs_T)0;
     }
+    if(threadIdx.x<topk){
     // 将乱序访存限制在寄存器级别，后续shared_mem规整写入
-    for (int row = block_row_base; row < block_row_base + CUMSUM_BLOCK_SIZE;
-         row++) {
-      if (row >= total_zipped_tokens_num) break;
-      const int internal_row = row - block_row_base;
+      for (int row = block_row_base; row < block_row_base + CUMSUM_BLOCK_SIZE;
+          row++) {
+        if (row >= total_zipped_tokens_num) break;
+        const int internal_row = row - block_row_base;
 #pragma unroll
-      for (int k = 0; k < topk; k++) {
-        const int expert = routemap_topk[row * topk + k];
-        if (expert == -1) continue;
-        local_expert_rowmap[internal_row][expert] =
-            local_cumsum[expert] + expert_offset[expert];
-        local_expert_probs[internal_row][expert] = probs_topk[row * topk + k];
-        local_cumsum[expert] += 1;
+        for (int k = 0; k < topk; k++) {
+            const int expert = routemap_topk[row * topk + k];
+          if (expert == -1) continue;
+          if(threadIdx.x==expert){
+            local_expert_rowmap[internal_row] =
+                local_cumsum + threadIdx.x*max_tokens_per_expert;
+            local_expert_probs[internal_row] = probs_topk[row * topk + k];
+            local_cumsum+= 1;
+          }
+        }
       }
     }
 // -------------------------- 块间通信逻辑 -----------------------------
-#pragma unroll
-    for (int i = 0; i < num_experts; i++) {
-      if (blockIdx.x != 0) [[likely]] { //分支发散
-        while (cumsum_offset[i] == CUMSUM_INVALID_TAG) [[likely]] {
-          cumsum_offset[i] = atomicExch( //必须使用原子函数，否则一定读写竞争
-              &global_expertwise_block_cumsum[blockIdx.x * num_experts + i], //0偏移
+    if(threadIdx.x<num_experts){
+      if (blockIdx.x != 0){ //分支发散
+        while (cumsum_offset == CUMSUM_INVALID_TAG){
+          cumsum_offset = atomicExch( //必须使用原子函数，否则一定读写竞争
+              &global_expertwise_block_cumsum[blockIdx.x * num_experts + threadIdx.x], //0偏移
               CUMSUM_INVALID_TAG);
         }
       }
-      const int proposed_offset = cumsum_offset[i] + local_cumsum[i];
-      global_expertwise_block_cumsum[(blockIdx.x + 1) * num_experts + i] =
-          proposed_offset;
-    }  // 至此，给下一个block的cumsum已经更新完毕，下一个block可以开始cumsum的计算了
-
+      const int proposed_offset = cumsum_offset + local_cumsum;
+      global_expertwise_block_cumsum[(blockIdx.x + 1) * num_experts + threadIdx.x] = proposed_offset;
+       // 至此，给下一个block的cumsum已经更新完毕，下一个block可以开始cumsum的计算了
 // -------------------------- 块内通信逻辑 -----------------------------
+// 可以进一步优化
 #pragma unroll
     for (int i = 0; i < CUMSUM_BLOCK_SIZE; i++) {
-#pragma unroll
-      for (int j = 0; j < num_experts; j++) {
         const int proposed_row =
-            (local_expert_rowmap[i][j] == -1)
+            (local_expert_rowmap[i] == -1)
                 ? -1
-                : (local_expert_rowmap[i][j] + cumsum_offset[j]);
-        shared_expert_rowmap[i][j] = proposed_row;
-        shared_expert_probmap[i][j] = local_expert_probs[i][j];
+                : (local_expert_rowmap[i] + cumsum_offset);
+        shared_expert_rowmap[i][threadIdx.x] = proposed_row;
+        shared_expert_probmap[i][threadIdx.x] = local_expert_probs[i];
       }
     }
-  }  // 至此，本线程块内的shared_mem已经规整完毕，接下来是向量化的数据搬运
+  }
+  // 至此，本线程块内的shared_mem已经规整完毕，接下来是向量化的数据搬运
   __syncthreads();  // 其余线程等到了thread0，工作安排在shared_mem上
   // ------------------------- 所有block内线程 -------------------------
   for (int row = block_row_base; row < block_row_base + CUMSUM_BLOCK_SIZE;
@@ -193,7 +185,7 @@ void dispatch_tokens_unzip_stable(
       token_length,                                                         \
       scale_length);
 
-// 可扩展：处理特定的topk和num_experts组合,可根据之后需求进行扩展
+// 可扩展：处理特定的topk和num_experts组合,可根据之后需求进行扩展 num_experts == 2/4/8
 #define HANDLE_EXPERT_CASE(TOKEN_T, PROB_T, INT_T, HAS_SCALE) \
   if (topk == 8 && num_experts == 4) {                        \
     DISPATCH_CASE(TOKEN_T, PROB_T, INT_T, 8, 4, HAS_SCALE)    \

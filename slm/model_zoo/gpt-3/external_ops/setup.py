@@ -212,8 +212,8 @@ def setup_token_dispatcher_utils():
                 "-maxrregcount=80",
                 "-lineinfo",
                 "-DCUTLASS_DEBUG_TRACE_LEVEL=0",
-                # "-gencode=arch=compute_80,code=sm_80",
-                "-gencode=arch=compute_90a,code=sm_90a",
+                "-gencode=arch=compute_80,code=sm_80",
+                # "-gencode=arch=compute_90a,code=sm_90a",
                 "-DNDEBUG"
             ]
             },
