@@ -19,7 +19,7 @@ H1 = 7168
 H2 = 2048
 topk = 8
 
-
+paddle.seed(42)
 topk_ind = np.load("topk_indice.npy")
 reci_x = paddle.randn( [ topk_ind.shape[0], H1], dtype="bfloat16")
 reci_x_fp8 = reci_x.cast("float8_e4m3fn")

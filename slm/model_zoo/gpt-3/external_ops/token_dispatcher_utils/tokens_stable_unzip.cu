@@ -78,9 +78,7 @@ __global__ void tokens_unzip_stable_kernel(
           local_cumsum+= 1;
         }
       }
-    }
 // -------------------------- 块间通信逻辑 -----------------------------
-    if(threadIdx.x<num_experts){
       if (blockIdx.x != 0){ //分支发散
         while (cumsum_offset == CUMSUM_INVALID_TAG){
           cumsum_offset = atomicExch( //必须使用原子函数，否则一定读写竞争
