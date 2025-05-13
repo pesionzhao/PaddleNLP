@@ -55,9 +55,10 @@ def test_unzip_stable():
         topk=topk, num_experts=4, max_tokens_per_expert=max_tokens)
     
     print("zipped_expertwise_rowmap_fp8: ", zipped_expertwise_rowmap)
-    np.savetxt("zipped_expertwise_rowmap_fp8.csv", zipped_expertwise_rowmap, delimiter=",", fmt='%d')
+    np.savetxt("zipped_expertwise_rowmap_fp8_zps.csv", zipped_expertwise_rowmap, delimiter=",", fmt='%d')
+    # np.savetxt("unzippedtokens_fp8_zps.csv", unzipped_tokens, delimiter=",", fmt='%d')
     np.savetxt("topk_ind_fp8.csv", topk_ind, delimiter=",", fmt='%d')
-    np.savetxt("unzipped_scales_fp8.csv", unzipped_scales[:10, :], delimiter=",", fmt='%d')
+    np.savetxt("unzipped_scales_fp8_zps.csv", unzipped_scales[:10, :], delimiter=",", fmt='%d')
     # ----------- BF16 -----------------
     print("############## BF16 ################")
     unzipped_tokens, zipped_expertwise_rowmap, unzipped_probs, _= TDU.tokens_unzip_stable(
