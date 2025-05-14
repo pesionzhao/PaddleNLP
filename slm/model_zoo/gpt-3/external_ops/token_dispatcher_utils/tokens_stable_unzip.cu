@@ -45,10 +45,7 @@ __global__ void tokens_unzip_stable_kernel(
   const int block_row_base = blockIdx.x * CUMSUM_BLOCK_SIZE;
   int cumsum_offset;
   int local_cumsum = 0;
-  cumsum_offset =
-        (blockIdx.x == 0) //分支发散
-            ? 0
-            : CUMSUM_INVALID_TAG;  // 除了第0个block，其他的都以非法值初始化,因为atomic忙等要用
+  cumsum_offset = (blockIdx.x != 0) * CUMSUM_INVALID_TAG;// 除了第0个block，其他的都以非法值初始化,因为atomic忙等要用
   const int base_row_idx = blockIdx.x * CUMSUM_BLOCK_SIZE; //
   __shared__ int shared_expert_rowmap[CUMSUM_BLOCK_SIZE][num_experts];
   __shared__ probs_T shared_expert_probmap[CUMSUM_BLOCK_SIZE][num_experts];
